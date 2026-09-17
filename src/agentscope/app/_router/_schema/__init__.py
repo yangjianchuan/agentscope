@@ -15,7 +15,7 @@ from ._chat import ChatRequest, ChatTriggerResponse
 from ._health import ComponentStatus, HealthResponse
 from ._hub import HubInfo
 from ._hub_mcp import InstallMCPRequest, MCPView, UpdateMCPRequest
-from ._hub_skill import SkillView
+from ._hub_skill import SkillDetail, SkillView, UpdateSkillRequest
 from ._workspace import (
     AddFromLibraryRequest,
     AddFromLibraryResponse,
@@ -98,7 +98,9 @@ __all__ = [
     "InstallMCPRequest",
     "MCPView",
     "UpdateMCPRequest",
+    "SkillDetail",
     "SkillView",
+    "UpdateSkillRequest",
     # Workspace
     "AddFromLibraryRequest",
     "AddFromLibraryResponse",

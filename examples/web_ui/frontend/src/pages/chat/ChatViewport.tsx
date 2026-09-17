@@ -53,9 +53,11 @@ import { useKnowledgeBaseMiddlewareSchema } from '@/hooks/useKnowledgeBaseMiddle
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
 import { useSessions } from '@/hooks/useSessions';
+import { useSkills } from '@/hooks/useSkills.ts';
 import { useWorkspace } from '@/hooks/useWorkspace.ts';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useTranslation } from '@/i18n/useI18n';
+import { withDefaultChatModelParameters } from '@/utils/modelParameters';
 
 interface ChatViewportProps {
 	/**
@@ -273,6 +275,8 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		addSkillsFromLibrary,
 		removeSkill,
 	} = useWorkspace(agentId, sessionId);
+	const { skills: installedSkills, loading: installedSkillsLoading } = useSkills();
+	const workspaceSkillNames = useMemo(() => new Set(skills.map((skill) => skill.name)), [skills]);
 	const { knowledgeBases, loading: knowledgeBasesLoading } = useKnowledgeBases();
 	const { schema: kbMiddlewareSchema } = useKnowledgeBaseMiddlewareSchema();
 
@@ -518,12 +522,13 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		if (!selectedModel) return null;
 		const items = groups[selectedModel.type];
 		if (!items) return null;
-		for (const { models } of items) {
+		for (const { credential, models } of items) {
+			if (credential.id !== selectedModel.credential_id) continue;
 			const card = models.find((m) => m.name === selectedModel.model);
 			if (card) return card;
 		}
 		return null;
-	}, [groups, selectedModel?.type, selectedModel?.model]);
+	}, [groups, selectedModel]);
 
 	/**
 	 * Pick the first model the available-models endpoint surfaces, used
@@ -533,23 +538,24 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	 * @returns The first available `ChatModelConfig`, or `null` when
 	 *   no credentials / models are configured.
 	 */
-	const getFirstAvailableModel = (): ChatModelConfig | null => {
+	const getFirstAvailableModel = useCallback((): ChatModelConfig | null => {
 		const firstType = Object.keys(groups)[0];
 		if (!firstType) return null;
 		const items = groups[firstType];
 		if (!items || items.length === 0) return null;
 		const firstItem = items[0];
-		const firstModel = (firstItem.models as { name?: string; id?: string }[])[0];
+		const firstModel = firstItem.models[0];
 		if (!firstModel) return null;
-		const modelName = firstModel.name ?? firstModel.id ?? null;
-		if (!modelName) return null;
-		return {
-			type: firstType,
-			credential_id: firstItem.credential.id,
-			model: modelName,
-			parameters: {},
-		};
-	};
+		return withDefaultChatModelParameters(
+			{
+				type: firstType,
+				credential_id: firstItem.credential.id,
+				model: firstModel.name,
+				parameters: {},
+			},
+			firstModel,
+		);
+	}, [groups]);
 
 	// Seed tasks + permission from the session snapshot ONCE per
 	// session, then leave them to the CustomEvent(name="state_updated")
@@ -592,7 +598,27 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		const sessionModel = view.session.config.chat_model_config;
 
 		if (sessionModel) {
-			setSelectedModel(sessionModel);
+			const items = groups[sessionModel.type] ?? [];
+			const credentialModels = items.find(
+				({ credential }) => credential.id === sessionModel.credential_id,
+			);
+			const modelCard = credentialModels?.models.find(
+				(model) => model.name === sessionModel.model,
+			);
+			const normalizedModel = withDefaultChatModelParameters(sessionModel, modelCard);
+			setSelectedModel(normalizedModel);
+
+			if (normalizedModel !== sessionModel && sessionId && agentId) {
+				sessionApi
+					.update(
+						sessionId,
+						agentId,
+						{ chat_model_config: normalizedModel },
+						{ silent: true },
+					)
+					.then(() => refetchSessions())
+					.catch(() => {});
+			}
 		} else {
 			const firstModel = getFirstAvailableModel();
 			if (firstModel) {
@@ -619,7 +645,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		setSelectedFallbackModel(view.session.config.fallback_chat_model_config ?? null);
 		setSelectedTTSModel(view.session.config.tts_model_config ?? null);
 		setSelectedKnowledgeConfig(view.session.config.knowledge_config ?? null);
-	}, [view, groups, sessionId, agentId]);
+	}, [view, groups, sessionId, agentId, getFirstAvailableModel, refetchSessions]);
 
 	// Sync selectedPermissionMode when the session changes. Same
 	// loading-window guard as above — don't reset the displayed mode
@@ -853,6 +879,10 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 									onSend={send}
 									onUserConfirm={onUserConfirm}
 									onInterrupt={interrupt}
+									installedSkills={installedSkills}
+									installedSkillsLoading={installedSkillsLoading}
+									workspaceSkillNames={workspaceSkillNames}
+									onAddSkillsFromLibrary={addSkillsFromLibrary}
 									// cwd={
 									// 	{cwd: view?.session.config.cwd, git: {
 									// 		branch: 'main',

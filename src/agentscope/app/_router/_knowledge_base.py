@@ -62,6 +62,7 @@ from .._service import (
     KnowledgeBaseView,
     ResourceAccessService,
 )
+from .._service._model_catalog import list_remote_embedding_models
 from ...middleware import RAGMiddleware
 from ...rag import ChunkerBase, ParserBase
 
@@ -128,8 +129,15 @@ async def list_kb_embedding_models(
         if embedding_cls is None:
             continue
 
+        remote = await list_remote_embedding_models(
+            credential.data or {},
+            embedding_cls,
+        )
+        candidates = (
+            embedding_cls.list_models() if remote is None else remote
+        )
         filtered = []
-        for card in embedding_cls.list_models():
+        for card in candidates:
             projected = policy.filter_card(card)
             if projected is not None:
                 filtered.append(projected)

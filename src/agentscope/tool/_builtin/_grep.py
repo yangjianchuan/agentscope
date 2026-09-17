@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """The grep tool in agentscope."""
 import fnmatch
+import os
 from typing import Any, List, Literal
 
 from .._base import ToolBase, ToolMiddlewareBase
@@ -160,6 +161,7 @@ class Grep(ToolBase):
         self,
         middlewares: List[ToolMiddlewareBase] | None = None,
         backend: BackendBase | None = None,
+        cwd: str | os.PathLike[str] | None = None,
     ) -> None:
         """Initialize the grep tool.
 
@@ -172,11 +174,14 @@ class Grep(ToolBase):
                 Ripgrep is always invoked via ``exec_shell`` so that
                 the same code path works for local, Docker, and E2B
                 backends.
+            cwd (`str | os.PathLike[str] | None`, optional):
+                Default directory for searches with no explicit ``path``.
         """
         from ._backend import LocalBackend
 
         super().__init__(middlewares=middlewares)
         self._backend = backend or LocalBackend()
+        self._cwd = os.fspath(cwd) if cwd is not None else None
 
     async def check_permissions(
         self,
@@ -219,7 +224,7 @@ class Grep(ToolBase):
 
         path = tool_input.get("path", "")
         if not path:
-            path = await self._backend.getcwd()
+            path = self._cwd or await self._backend.getcwd()
         return fnmatch.fnmatch(path, rule_content)
 
     async def generate_suggestions(
@@ -239,7 +244,7 @@ class Grep(ToolBase):
             `List[PermissionRule]`:
                 A single suggested rule covering the search directory
         """
-        backend_cwd = await self._backend.getcwd()
+        backend_cwd = self._cwd or await self._backend.getcwd()
         path = tool_input.get("path") or backend_cwd
 
         abs_path = self._backend.abspath(path, cwd=backend_cwd)
@@ -355,7 +360,8 @@ class Grep(ToolBase):
             n: Show line numbers (content mode only, default True)
             **kwargs: Additional parameters (-A, -B, -C)
         """
-        search_path = path or await self._backend.getcwd()
+        backend_cwd = self._cwd or await self._backend.getcwd()
+        search_path = self._backend.abspath(path or "", cwd=backend_cwd)
 
         if head_limit is not None and head_limit < 0:
             return ToolChunk(

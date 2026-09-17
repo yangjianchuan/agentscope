@@ -1,7 +1,7 @@
 import { ChevronDown, PlusCircle, Ban } from 'lucide-react';
 import { useEffect } from 'react';
 
-import type { ChatModelConfig } from '@/api';
+import type { ChatModelConfig, ModelCard } from '@/api';
 import { Button } from '@/components/ui/button';
 import {
 	DropdownMenu,
@@ -20,6 +20,7 @@ import { useAvailableModels } from '@/hooks/useAvailableModels';
 import { useTranslation } from '@/i18n/useI18n.ts';
 import { cn } from '@/lib/utils';
 import { credentialLabel } from '@/utils/common';
+import { defaultChatModelParameters } from '@/utils/modelParameters';
 
 interface Props extends Omit<React.ComponentPropsWithoutRef<typeof Button>, 'onChange' | 'value'> {
 	value?: ChatModelConfig | null;
@@ -65,12 +66,18 @@ export function LlmSelect({
 		if (refetchTrigger !== undefined && refetchTrigger > 0) refetch();
 	}, [refetchTrigger, refetch]);
 
-	const handleSelect = (type: string, credentialId: string, model: string) => {
-		onChange?.({ type, credential_id: credentialId, model, parameters: {} });
+	const handleSelect = (type: string, credentialId: string, modelCard: ModelCard) => {
+		onChange?.({
+			type,
+			credential_id: credentialId,
+			model: modelCard.name,
+			parameters: defaultChatModelParameters(modelCard),
+		});
 	};
 
+	const reasoningEffort = value?.parameters.reasoning_effort;
 	const displayLabel = value?.model
-		? value.model
+		? `${value.model}${typeof reasoningEffort === 'string' ? ` ${reasoningEffort}` : ''}`
 		: loading
 			? t('llm-select.loading')
 			: (placeholder ?? t('llm-select.placeholder'));
@@ -84,7 +91,9 @@ export function LlmSelect({
 					className={cn('justify-between gap-1 font-normal', className)}
 					{...props}
 				>
-					<span className="truncate">{displayLabel}</span>
+					<span className="truncate" title={displayLabel}>
+						{displayLabel}
+					</span>
 					<ChevronDown className="size-3.5 text-muted-foreground" />
 				</Button>
 			</DropdownMenuTrigger>
@@ -111,7 +120,7 @@ export function LlmSelect({
 													handleSelect(
 														type,
 														usable[0].credential.id,
-														m.name,
+														m,
 													)
 												}
 											>
@@ -126,15 +135,15 @@ export function LlmSelect({
 												<DropdownMenuPortal>
 													<DropdownMenuSubContent className="max-h-60 overflow-y-auto">
 														{models.map((m) => (
-															<DropdownMenuItem
-																key={m.name}
-																onSelect={() =>
-																	handleSelect(
-																		type,
-																		credential.id,
-																		m.name,
-																	)
-																}
+													<DropdownMenuItem
+														key={m.name}
+														onSelect={() =>
+															handleSelect(
+																type,
+																credential.id,
+																m,
+															)
+														}
 															>
 																{m.label}
 															</DropdownMenuItem>

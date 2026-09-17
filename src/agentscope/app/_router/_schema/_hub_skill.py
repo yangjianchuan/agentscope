@@ -47,9 +47,23 @@ class SkillView(BaseModel):
         default=None,
         description="The card version installed.",
     )
+    can_open_folder: bool = Field(
+        default=False,
+        description="Whether this skill has a server-local folder.",
+    )
+    can_delete: bool = Field(
+        default=True,
+        description="Whether this installed skill may be deleted.",
+    )
 
     @classmethod
-    def from_record(cls, record: SkillRecord) -> "SkillView":
+    def from_record(
+        cls,
+        record: SkillRecord,
+        *,
+        can_open_folder: bool = False,
+        can_delete: bool = True,
+    ) -> "SkillView":
         """Project a stored record onto its list view.
 
         The ``SKILL.md`` body is left out — it is long enough to bloat a
@@ -76,4 +90,36 @@ class SkillView(BaseModel):
             hub_id=record.hub_id,
             card_id=record.card_id,
             version=record.version,
+            can_open_folder=can_open_folder,
+            can_delete=can_delete,
         )
+
+
+class SkillDetail(SkillView):
+    """An installed skill detail including its ``SKILL.md`` body."""
+
+    markdown: str = Field(default="", description="The SKILL.md body.")
+
+    @classmethod
+    def from_record(
+        cls,
+        record: SkillRecord,
+        *,
+        can_open_folder: bool = False,
+        can_delete: bool = True,
+    ) -> "SkillDetail":
+        """Project a stored record onto its detail response."""
+        return cls(
+            **SkillView.from_record(
+                record,
+                can_open_folder=can_open_folder,
+                can_delete=can_delete,
+            ).model_dump(),
+            markdown=record.markdown,
+        )
+
+
+class UpdateSkillRequest(BaseModel):
+    """The body of an installed-skill state update."""
+
+    enabled: bool = Field(description="Whether the skill is turned on.")

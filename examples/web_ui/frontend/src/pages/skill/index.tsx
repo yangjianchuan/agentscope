@@ -1,4 +1,12 @@
-import { Blocks, Check, Download, Plug, Trash2, TriangleAlert } from 'lucide-react';
+import {
+	Blocks,
+	Check,
+	Download,
+	FolderOpen,
+	Plug,
+	Trash2,
+	TriangleAlert,
+} from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
@@ -40,6 +48,7 @@ import {
 	SidebarMenuItem,
 } from '@/components/ui/sidebar.tsx';
 import { Spinner } from '@/components/ui/spinner.tsx';
+import { Switch } from '@/components/ui/switch.tsx';
 import { useResourceDrawer } from '@/hooks/useResourceDrawer.ts';
 import { useSkillHubCards } from '@/hooks/useSkillHubCards.ts';
 import { useSkillHubs } from '@/hooks/useSkillHubs.ts';
@@ -310,11 +319,21 @@ interface MinePanelProps {
 	skills: SkillView[];
 	loading: boolean;
 	onRemove: (skillId: string) => void;
+	onSetEnabled: (skillId: string, enabled: boolean) => Promise<void>;
+	onOpenFolder: (skillId: string) => Promise<void>;
 }
 
-function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
+function MinePanel({
+	skills,
+	loading,
+	onRemove,
+	onSetEnabled,
+	onOpenFolder,
+}: MinePanelProps) {
 	const { t } = useTranslation();
 	const [query, setQuery] = useState('');
+	const [updatingId, setUpdatingId] = useState<string | null>(null);
+	const [openingId, setOpeningId] = useState<string | null>(null);
 	// The list view omits SKILL.md; the detail endpoint carries it.
 	const drawer = useResourceDrawer(
 		useCallback((skill) => skillApi.get((skill as SkillView).id), []),
@@ -330,6 +349,33 @@ function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
 				),
 			)
 		: skills;
+	const openedSkill = drawer.opened
+		? (skills.find((skill) => skill.id === (drawer.opened as SkillView).id) ?? null)
+		: null;
+
+	const handleEnabledChange = async (skill: SkillView, enabled: boolean) => {
+		setUpdatingId(skill.id);
+		try {
+			await onSetEnabled(skill.id, enabled);
+		} catch (e) {
+			// ApiErrors have already been shown by the global client toast.
+			if (!(e instanceof ApiError)) throw e;
+		} finally {
+			setUpdatingId(null);
+		}
+	};
+
+	const handleOpenFolder = async (skillId: string) => {
+		setOpeningId(skillId);
+		try {
+			await onOpenFolder(skillId);
+		} catch (e) {
+			// Keep the row stable; the API client already explains the failure.
+			if (!(e instanceof ApiError)) throw e;
+		} finally {
+			setOpeningId(null);
+		}
+	};
 
 	return (
 		<ResourcePanel
@@ -376,7 +422,10 @@ function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
 					{shown.map((skill) => (
 						<Item
 							key={skill.id}
-							className="cursor-pointer hover:bg-accent/50"
+							className={cn(
+								'cursor-pointer hover:bg-accent/50',
+								!skill.enabled && 'bg-surface-muted/40',
+							)}
 							onClick={() => drawer.open(skill)}
 						>
 							<ItemMedia>
@@ -416,31 +465,65 @@ function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
 											#{tag}
 										</span>
 									))}
+									{!skill.enabled && (
+										<span className="text-xs text-muted-foreground">
+											{t('skill.disabled')}
+										</span>
+									)}
 								</ItemTitle>
 								<ItemDescription className="line-clamp-1">
 									{skill.description}
 								</ItemDescription>
 							</ItemContent>
 
-							<ItemActions>
+							<ItemActions className="gap-1">
 								{skill.version && (
 									<span className="text-xs text-muted-foreground whitespace-nowrap">
 										{skill.version}
 									</span>
 								)}
-								<Button
-									size="icon-sm"
-									variant="ghost"
-									// Deleting from the row must not also
-									// open the drawer behind it.
-									onClick={(e) => {
-										e.stopPropagation();
-										onRemove(skill.id);
+								{skill.can_open_folder && (
+									<Button
+										size="icon-sm"
+										variant="ghost"
+										className="text-muted-foreground"
+										disabled={openingId === skill.id}
+										onClick={(e) => {
+											e.stopPropagation();
+											void handleOpenFolder(skill.id);
+										}}
+										title={t('skill.openFolder')}
+										aria-label={t('skill.openFolder')}
+									>
+										{openingId === skill.id ? <Spinner /> : <FolderOpen />}
+									</Button>
+								)}
+								<Switch
+									size="sm"
+									checked={skill.enabled}
+									disabled={updatingId === skill.id}
+									onClick={(e) => e.stopPropagation()}
+									onCheckedChange={(enabled) => {
+										void handleEnabledChange(skill, enabled);
 									}}
-									title={t('common.delete')}
-								>
-									<Trash2 />
-								</Button>
+									title={t(skill.enabled ? 'skill.disable' : 'skill.enable')}
+									aria-label={t(skill.enabled ? 'skill.disable' : 'skill.enable')}
+								/>
+								{skill.can_delete && (
+									<Button
+										size="icon-sm"
+										variant="ghost"
+										// Deleting from the row must not also
+										// open the drawer behind it.
+										onClick={(e) => {
+											e.stopPropagation();
+											onRemove(skill.id);
+										}}
+										title={t('common.delete')}
+									>
+										<Trash2 />
+									</Button>
+								)}
 							</ItemActions>
 						</Item>
 					))}
@@ -454,16 +537,53 @@ function MinePanel({ skills, loading, onRemove }: MinePanelProps) {
 					if (!open) drawer.close();
 				}}
 				action={
-					<Button
-						variant="destructive"
-						onClick={() => {
-							if (drawer.opened) onRemove((drawer.opened as SkillView).id);
-							drawer.close();
-						}}
-					>
-						<Trash2 />
-						{t('common.delete')}
-					</Button>
+					<div className="flex flex-wrap items-center justify-end gap-2">
+						{openedSkill && (
+							<div className="flex items-center gap-2 pr-2">
+								<span className="text-sm text-muted-foreground">
+									{t(openedSkill.enabled ? 'skill.enabled' : 'skill.disabled')}
+								</span>
+								<Switch
+									checked={openedSkill.enabled}
+									disabled={updatingId === openedSkill.id}
+									onCheckedChange={(enabled) => {
+										void handleEnabledChange(openedSkill, enabled);
+									}}
+									aria-label={t(
+										openedSkill.enabled ? 'skill.disable' : 'skill.enable',
+									)}
+								/>
+							</div>
+						)}
+						{(drawer.opened as SkillView | null)?.can_open_folder && (
+							<Button
+								variant="outline"
+								disabled={openingId === (drawer.opened as SkillView).id}
+								onClick={() => {
+									void handleOpenFolder((drawer.opened as SkillView).id);
+								}}
+							>
+								{openingId === (drawer.opened as SkillView).id ? (
+									<Spinner />
+								) : (
+									<FolderOpen />
+								)}
+								{t('skill.openFolder')}
+							</Button>
+						)}
+						{(drawer.opened as SkillView | null)?.can_delete && (
+							<Button
+								variant="destructive"
+								onClick={() => {
+									if (drawer.opened) onRemove((drawer.opened as SkillView).id);
+									drawer.close();
+								}}
+							>
+								<Trash2 />
+								{t('common.delete')}
+							</Button>
+						)}
+					</div>
 				}
 			/>
 		</ResourcePanel>
@@ -478,7 +598,14 @@ export function SkillHubPage() {
 	const { hubs, loading: hubsLoading, error: hubsError, refetch } = useSkillHubs();
 	// Loaded page-wide, not per panel: the hub view needs it to mark cards
 	// as already installed, and the "mine" view to list them.
-	const { skills, loading: skillsLoading, refetch: refetchSkills, remove } = useSkills();
+	const {
+		skills,
+		loading: skillsLoading,
+		refetch: refetchSkills,
+		remove,
+		setEnabled,
+		openFolder,
+	} = useSkills();
 	const installedNames = new Set(skills.map((skill) => skill.name));
 
 	return (
@@ -604,7 +731,13 @@ export function SkillHubPage() {
 						onInstalled={refetchSkills}
 					/>
 				) : (
-					<MinePanel skills={skills} loading={skillsLoading} onRemove={remove} />
+					<MinePanel
+						skills={skills}
+						loading={skillsLoading}
+						onRemove={remove}
+						onSetEnabled={setEnabled}
+						onOpenFolder={openFolder}
+					/>
 				)}
 			</main>
 		</div>

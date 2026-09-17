@@ -879,8 +879,14 @@ class ChatService:
                     session_id,
                     session_record.config.workspace_id,
                 )
+                backend = workspace.get_backend()
+                working_directory = backend.abspath(
+                    session_record.config.cwd or "",
+                    cwd=workspace.workdir,
+                )
 
-                # Add workspace working directory to the permission context
+                # Keep the system workspace available for offloaded state and
+                # grant the selected project directory as the active location.
                 working_dirs = (
                     session_record.state.permission_context.working_directories
                 )
@@ -889,6 +895,13 @@ class ChatService:
                         workspace.workdir
                     ] = AdditionalWorkingDirectory(
                         path=workspace.workdir,
+                        source="session",
+                    )
+                if working_directory not in working_dirs:
+                    working_dirs[
+                        working_directory
+                    ] = AdditionalWorkingDirectory(
+                        path=working_directory,
                         source="session",
                     )
 
@@ -1054,6 +1067,7 @@ class ChatService:
                     sub_agent_templates=self._sub_agent_templates,
                     team_role=team_ctx.role if team_ctx else None,
                     channel_tools=channel_tools,
+                    working_directory=working_directory,
                 )
 
                 # -------------------------------------------------------------
@@ -1081,6 +1095,14 @@ class ChatService:
                 # 5. Assemble the Agent.
                 # -------------------------------------------------------------
                 attachment = f"You're within a session (id={session_id})."
+                attachment += (
+                    f" The current working directory is "
+                    f"{working_directory!r}. Treat it as the default project "
+                    f"directory for shell commands and file searches. The "
+                    f"workspace root {workspace.workdir!r} stores "
+                    f"system-managed session data and is not the current "
+                    f"working directory."
+                )
 
                 # Channel-bound sessions: tell the agent which chat it serves.
                 if channel is not None and channel_origin is not None:

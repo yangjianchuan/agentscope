@@ -65,7 +65,7 @@ export function AddSkillDialog({ children, present, onUpload, onAddFromLibrary }
 	const input = useRef<HTMLInputElement>(null);
 	const { skills, loading } = useSkills();
 
-	const selectable = skills.filter((skill) => !present.has(skill.name));
+	const selectable = skills.filter((skill) => skill.enabled && !present.has(skill.name));
 
 	const toggle = (skill: SkillView) => {
 		setPicked((prev) => {
@@ -163,14 +163,15 @@ export function AddSkillDialog({ children, present, onUpload, onAddFromLibrary }
 								<ItemGroup className="gap-1">
 									{skills.map((skill) => {
 										const already = present.has(skill.name);
+										const disabled = already || !skill.enabled;
 										return (
 											<Item
 												key={skill.id}
-												data-disabled={already || undefined}
+												data-disabled={disabled || undefined}
 											>
 												<Checkbox
 													checked={already || picked.has(skill.id)}
-													disabled={already}
+													disabled={disabled}
 													onCheckedChange={() => toggle(skill)}
 												/>
 												<ItemMedia>
@@ -195,6 +196,11 @@ export function AddSkillDialog({ children, present, onUpload, onAddFromLibrary }
 														{skill.author && (
 															<span className="text-xs text-muted-foreground">
 																@{skill.author}
+															</span>
+														)}
+														{!skill.enabled && (
+															<span className="text-xs text-muted-foreground">
+																{t('skill.disabled')}
 															</span>
 														)}
 													</ItemTitle>

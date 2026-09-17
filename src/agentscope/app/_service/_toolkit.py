@@ -52,6 +52,7 @@ async def get_toolkit(
     sub_agent_templates: dict[str, SubAgentTemplate] | None = None,
     team_role: Literal["leader", "worker"] | None = None,
     channel_tools: list[ToolBase] | None = None,
+    working_directory: str | None = None,
 ) -> Toolkit:
     """Assemble the complete :class:`Toolkit` for one chat turn.
 
@@ -123,6 +124,9 @@ optional):
         channel_tools (`list[ToolBase] | None`, optional):
             Platform tools of the originating channel, resolved once
             by the caller. ``None`` / empty when channel-less.
+        working_directory (`str | None`, optional):
+            Resolved session directory used by shell and search tools.
+            Defaults to the workspace root.
 
     Returns:
         `Toolkit`: Fully populated toolkit (tools + skills + MCPs).
@@ -131,7 +135,7 @@ optional):
     tool_groups = []
 
     # The general tools running in the workspace
-    tools = await workspace.list_tools()
+    tools = await workspace.list_tools(cwd=working_directory)
 
     # Planning tools — always on.
     tools += [TaskCreate(), TaskList(), TaskGet(), TaskUpdate()]

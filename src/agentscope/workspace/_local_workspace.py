@@ -138,7 +138,7 @@ class LocalWorkspace(WorkspaceBase):
         """
         return sys.executable or "python3"
 
-    async def list_tools(self) -> list[ToolBase]:
+    async def list_tools(self, *, cwd: str | None = None) -> list[ToolBase]:
         """Return builtin tools, using PowerShell as the shell on Windows."""
         from ..tool import Bash, Edit, Glob, Grep, PowerShell, Read, Write
 
@@ -147,16 +147,17 @@ class LocalWorkspace(WorkspaceBase):
         if self._glob_helper_path is not None:
             glob_kwargs["glob_helper_path"] = self._glob_helper_path
 
+        effective_cwd = cwd or self.workdir
         if os.name == "nt":
-            shell: ToolBase = PowerShell(cwd=self.workdir, backend=backend)
+            shell: ToolBase = PowerShell(cwd=effective_cwd, backend=backend)
         else:
-            shell = Bash(cwd=self.workdir, backend=backend)
+            shell = Bash(cwd=effective_cwd, backend=backend)
 
         return [
             shell,
             Edit(backend=backend),
-            Glob(**glob_kwargs),
-            Grep(backend=backend),
+            Glob(cwd=effective_cwd, **glob_kwargs),
+            Grep(cwd=effective_cwd, backend=backend),
             Read(backend=backend),
             Write(backend=backend),
         ]

@@ -163,6 +163,27 @@ class TestLocalWorkspaceTools(IsolatedAsyncioTestCase):
         self.assertIsInstance(tools[0], PowerShell)
         self.assertIs(tools[0]._backend, backend)
 
+    async def test_list_tools_uses_selected_working_directory(self) -> None:
+        """Shell and search tools start from the session cwd."""
+        with tempfile.TemporaryDirectory() as workdir:
+            selected = os.path.join(workdir, "selected")
+            os.makedirs(selected)
+            workspace = LocalWorkspace(workdir=workdir)
+            await workspace.initialize()
+            try:
+                with patch(
+                    "agentscope.workspace._local_workspace.os",
+                    SimpleNamespace(name="nt"),
+                ):
+                    tools = await workspace.list_tools(cwd=selected)
+            finally:
+                await workspace.close()
+
+        by_type = {type(tool): tool for tool in tools}
+        self.assertEqual(by_type[PowerShell]._cwd, selected)
+        self.assertEqual(by_type[Glob]._cwd, selected)
+        self.assertEqual(by_type[Grep]._cwd, selected)
+
 
 class TestLocalWorkspaceOffload(IsolatedAsyncioTestCase):
     """Test cases for LocalWorkspace offload functionality."""

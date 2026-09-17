@@ -11,7 +11,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 import { Button } from '../ui/button';
 import { DiffStats } from './tool-renderers/_shared';
-import type { GitStatus } from '@/api';
+import type { GitStatus, SkillView } from '@/api';
 import { ASMessageBubble } from '@/components/chat/ASMessageBubble.tsx';
 import { ConfirmCard } from '@/components/chat/ConfirmCard.tsx';
 import { FlipCard } from '@/components/chat/FlipCard.tsx';
@@ -109,6 +109,14 @@ interface ChatContentProps {
 	git?: GitStatus | null;
 	/** Re-reads the git state, since nothing polls for it. */
 	onRefreshGit?: () => void | Promise<void>;
+	/** User-level installed skills available to the slash-command picker. */
+	installedSkills?: SkillView[];
+	/** Whether the installed skill library is loading. */
+	installedSkillsLoading?: boolean;
+	/** Skill names already equipped in this session workspace. */
+	workspaceSkillNames?: ReadonlySet<string>;
+	/** Equips installed skills selected from the input. */
+	onAddSkillsFromLibrary?: (skillIds: string[]) => Promise<void>;
 }
 
 const ChatContentComponent: React.FC<ChatContentProps> = ({
@@ -130,6 +138,10 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	onCwdChange,
 	git,
 	onRefreshGit,
+	installedSkills,
+	installedSkillsLoading,
+	workspaceSkillNames,
+	onAddSkillsFromLibrary,
 }) => {
 	const { t, i18n } = useTranslation();
 	// Only a session that finished loading with nothing in it is empty.
@@ -295,6 +307,13 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 						fileProcessor={fileProcessor}
 						phase={phase}
 						onInterrupt={onInterrupt}
+						installedSkills={installedSkills}
+						installedSkillsLoading={installedSkillsLoading}
+						workspaceSkillNames={workspaceSkillNames}
+						onAddSkillsFromLibrary={onAddSkillsFromLibrary}
+						agentId={agentId}
+						sessionId={sessionId}
+						workingDirectory={cwd}
 						headerSlot={
 							<div className="flex w-full items-center justify-between px-2 py-1 text-sm text-muted-foreground">
 								<WorkingDirectoryDialog

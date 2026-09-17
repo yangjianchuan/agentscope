@@ -16,6 +16,5 @@ class ListModelsResponse(BaseModel):
 class ListModelsRequest(BaseModel):
     """List the candidate models request."""
 
-    provider: str = Field(
-        description="The provider type, e.g. openai, dashscope, etc.",
-    )
+    provider: str = Field(description="The provider type, e.g. openai_credential, dashscope, etc.")
+    credential_id: str | None = Field(default=None, description="The credential record ID used to resolve custom model endpoints.")

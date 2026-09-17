@@ -551,14 +551,15 @@ class WorkspaceBase:
 
     # ── for Agent: tool & MCP discovery ────────────────────────────
 
-    async def list_tools(self) -> list[ToolBase]:
+    async def list_tools(self, *, cwd: str | None = None) -> list[ToolBase]:
         """Built-in tools scoped to this workspace.
 
         Returns the six builtin tools (:class:`Bash`, :class:`Edit`,
         :class:`Glob`, :class:`Grep`, :class:`Read`, :class:`Write`),
         each bound to the workspace's active backend so that all
         filesystem and process I/O happens inside the workspace's
-        execution environment. :class:`Bash` is rooted at
+        execution environment. :class:`Bash`, :class:`Glob`, and
+        :class:`Grep` are rooted at ``cwd`` when supplied, otherwise at
         :attr:`workdir`; :class:`Glob` receives the optional
         :attr:`_glob_helper_path` when the backend ships one.
 
@@ -572,11 +573,12 @@ class WorkspaceBase:
         glob_kwargs: dict = {"backend": backend}
         if self._glob_helper_path is not None:
             glob_kwargs["glob_helper_path"] = self._glob_helper_path
+        effective_cwd = cwd or self.workdir
         return [
-            Bash(cwd=self.workdir, backend=backend),
+            Bash(cwd=effective_cwd, backend=backend),
             Edit(backend=backend),
-            Glob(**glob_kwargs),
-            Grep(backend=backend),
+            Glob(cwd=effective_cwd, **glob_kwargs),
+            Grep(cwd=effective_cwd, backend=backend),
             Read(backend=backend),
             Write(backend=backend),
         ]

@@ -286,7 +286,10 @@ async def install_skill(
             ),
         ) from e
 
-    return SkillView.from_record(record)
+    return SkillView.from_record(
+        record,
+        can_delete=hub.can_delete_library_record(card.id),
+    )
 
 
 # Keep this catch-all path route after the more specific ``/install`` route.

@@ -16,13 +16,26 @@ from agentscope.app.channel import (
 from agentscope.app.hub import ClawSkillHub, GitHubMCPHub
 from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
-from agentscope.app.storage import RedisStorage
-from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.mcp import MCPClient, StdioMCPConfig, HttpMCPConfig
 from agentscope.middleware import AgenticMemoryMiddleware, MiddlewareBase
 from agentscope.permission import PermissionContext, PermissionMode
 from agentscope.rag import ApproxTokenChunker, QdrantStore
 from agentscope.workspace import WorkspaceBase
+
+try:
+    from .skill_discovery import (
+        CodexSkillLocalWorkspaceManager,
+        CodexSkillHub,
+        CodexSkillSQLStorage,
+        discover_codex_skill_paths,
+    )
+except ImportError:
+    from skill_discovery import (
+        CodexSkillLocalWorkspaceManager,
+        CodexSkillHub,
+        CodexSkillSQLStorage,
+        discover_codex_skill_paths,
+    )
 
 default_mcps = [
     MCPClient(
@@ -47,11 +60,23 @@ if os.getenv("AMAP_API_KEY"):
         ),
     )
 
-storage = RedisStorage(
-    host="localhost",
-    port=6379,
-)
+codex_skill_paths = discover_codex_skill_paths()
+codex_skill_hub = CodexSkillHub(codex_skill_paths)
 
+storage_path = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "runtime",
+        "agentscope.db",
+    ),
+)
+storage = CodexSkillSQLStorage(
+    url=f"sqlite+aiosqlite:///{storage_path}",
+    create_tables=True,
+    codex_hub=codex_skill_hub,
+)
 vector_store = QdrantStore(location=":memory:")
 
 
@@ -84,13 +109,15 @@ app = create_app(
     #     host="localhost",
     #     port=6379,
     # ),
-    workspace_manager=LocalWorkspaceManager(
+    workspace_manager=CodexSkillLocalWorkspaceManager(
         basedir=os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "workspaces",
         ),
         # The default MCP servers that will be added into the workspace
         default_mcps=default_mcps,
+        # Seed and merge skills from the current user's Codex installation.
+        codex_skill_paths=codex_skill_paths,
     ),
     # Knowledge base feature — backed by an in-memory Qdrant store. The
     # CollectionPerKbManager allocates one collection per knowledge base,
@@ -107,7 +134,10 @@ app = create_app(
     # from the user in its ``inputs_schema``. Passing a ClawHub token
     # only raises the rate limit.
     mcp_hubs=[GitHubMCPHub()],
-    skill_hubs=[ClawSkillHub(api_token=os.getenv("CLAWHUB_API_TOKEN"))],
+    skill_hubs=[
+        codex_skill_hub,
+        ClawSkillHub(api_token=os.getenv("CLAWHUB_API_TOKEN")),
+    ],
     # Customize your own subagent templates
     custom_subagent_templates=[
         SubAgentTemplate(
@@ -175,3 +205,5 @@ if __name__ == "__main__":
         # spawn the subprocesses that the builtin tools rely on
         reload=sys.platform != "win32",
     )
+
+

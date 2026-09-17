@@ -21,3 +21,7 @@ class ListTTSModelsRequest(BaseModel):
     provider: str = Field(
         description="The provider type, e.g. dashscope_credential.",
     )
+    credential_id: str | None = Field(
+        default=None,
+        description="The credential record ID used for custom endpoints.",
+    )

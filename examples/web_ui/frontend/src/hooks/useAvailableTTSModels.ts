@@ -30,7 +30,7 @@ export function useAvailableTTSModels() {
 					if (!type) return;
 					if (!result[type]) result[type] = [];
 					try {
-						const { models } = await ttsModelApi.list(type);
+						const { models } = await ttsModelApi.list(type, credential.id);
 						if (models.length > 0) {
 							result[type].push({ credential, models });
 						}

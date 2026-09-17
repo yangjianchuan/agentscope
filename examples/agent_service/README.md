@@ -15,6 +15,12 @@ Details about the agent service please refer to the [tutorial](https://docs.agen
 - Node.js ≥ 20 with `npx`
 - [optional] Gaode/AMap API key in `AMAP_API_KEY` (for the `amap` MCP)
 
+On startup, the example service also discovers skills recursively from the
+current user's `~/.codex/skills` directory. It copies them into new and
+existing agent workspaces without modifying the source skill directories.
+They are also synchronized into each user's installed-skill library when the
+library is opened, with a local Hub backing details and workspace installs.
+
 ## Quickstart
 
 Install AgentScope from PyPI or source:

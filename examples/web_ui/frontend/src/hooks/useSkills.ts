@@ -41,5 +41,17 @@ export function useSkills() {
 		[refetch],
 	);
 
-	return { skills, loading, error, refetch, remove };
+	const setEnabled = useCallback(async (skillId: string, enabled: boolean) => {
+		const updated = await skillApi.update(skillId, { enabled });
+		setSkills((current) =>
+			current.map((skill) => (skill.id === skillId ? updated : skill)),
+		);
+	}, []);
+
+	const openFolder = useCallback(
+		async (skillId: string) => skillApi.openFolder(skillId),
+		[],
+	);
+
+	return { skills, loading, error, refetch, remove, setEnabled, openFolder };
 }

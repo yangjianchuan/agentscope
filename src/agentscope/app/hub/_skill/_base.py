@@ -31,6 +31,44 @@ class SkillHubBase(HubBase, ABC):
     extracts into a workspace.
     """
 
+    def get_local_directory(self, card_id: str) -> str | None:
+        """Return the server-local directory backing a skill card.
+
+        Remote hubs normally return ``None``. Local hubs can override this
+        capability so a desktop UI may reveal the directory without ever
+        accepting an arbitrary path from the client.
+
+        Args:
+            card_id (`str`):
+                The hub-local card identifier.
+
+        Returns:
+            `str | None`:
+                The local directory, or ``None`` when the card has no local
+                filesystem representation.
+        """
+        del card_id
+        return None
+
+    def can_delete_library_record(self, card_id: str) -> bool:
+        """Return whether an installed record from this hub may be deleted.
+
+        Most hubs install independent library records, so deletion is allowed
+        by default. Hubs that mirror an external source can override this to
+        keep those records read-only while still allowing state changes such
+        as enable and disable.
+
+        Args:
+            card_id (`str`):
+                The hub-local card identifier.
+
+        Returns:
+            `bool`:
+                Whether the library record may be deleted.
+        """
+        del card_id
+        return True
+
     @abstractmethod
     async def list_skills(
         self,

@@ -108,6 +108,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.template
 .venv
 env/
 venv/
@@ -133,10 +136,18 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-.idea/
+# Additional Python tooling caches
+.ruff_cache/
+.pytype/
+.pyright/
 
-# macOS
+.idea/
+.vscode/
+
+# OS metadata
 .DS_Store
+Thumbs.db
+Desktop.ini
 
 # docs
 docs/tutorial/en/build/
@@ -153,6 +164,7 @@ package-lock.json
 *.tsbuildinfo
 .wireit/
 .angular/
+.pnpm-store/
 uv.lock
 
 # JS/Node frontend (examples/web_ui)
@@ -164,5 +176,12 @@ pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
+coverage/
+playwright-report/
+test-results/
 
 **/workspaces/
+
+# Local application state and generated verification artifacts
+/runtime/
+/blobs/

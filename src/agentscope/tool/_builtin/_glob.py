@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import sys
 from typing import TYPE_CHECKING, Any, List
 
@@ -101,6 +102,7 @@ Use head_limit to cap the number of results returned."""  # ignore: E501
         backend: BackendBase | None = None,
         glob_helper_path: str | None = None,
         middlewares: List[ToolMiddlewareBase] | None = None,
+        cwd: str | os.PathLike[str] | None = None,
     ) -> None:
         """Initialize the glob tool.
 
@@ -117,11 +119,14 @@ Use head_limit to cap the number of results returned."""  # ignore: E501
                 (suitable for :class:`LocalBackend`). Remote backends
                 (Docker, E2B) should pass the path where the script
                 was deployed during workspace initialization.
+            cwd (`str | os.PathLike[str] | None`, optional):
+                Default directory for searches with no explicit ``path``.
         """
         from ._backend import LocalBackend
 
         super().__init__(middlewares=middlewares)
         self._backend = backend or LocalBackend()
+        self._cwd = os.fspath(cwd) if cwd is not None else None
         # When running against the host, invoke the helper with the
         # current interpreter (``sys.executable``) rather than assuming
         # ``python3`` is on PATH.
@@ -203,7 +208,7 @@ Use head_limit to cap the number of results returned."""  # ignore: E501
             `List[PermissionRule]`:
                 A single suggested rule covering the search directory
         """
-        backend_cwd = await self._backend.getcwd()
+        backend_cwd = self._cwd or await self._backend.getcwd()
         path = tool_input.get("path") or backend_cwd
 
         # Normalize path and build a glob pattern. Glob patterns are
@@ -276,7 +281,8 @@ Use head_limit to cap the number of results returned."""  # ignore: E501
                 is_last=True,
             )
 
-        base_dir = path if path else await self._backend.getcwd()
+        backend_cwd = self._cwd or await self._backend.getcwd()
+        base_dir = self._backend.abspath(path or "", cwd=backend_cwd)
 
         # The base must be an existing directory; a regular file would
         # otherwise be accepted here and fail later with a confusing

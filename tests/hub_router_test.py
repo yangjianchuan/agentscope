@@ -3,11 +3,13 @@
 """Hub router test case — browse and install, without any network."""
 import io
 import json
+from pathlib import Path
 import tempfile
 import zipfile
 from typing import Any, AsyncIterator
 from urllib.parse import quote
 from unittest import IsolatedAsyncioTestCase
+from unittest.mock import patch
 
 import fakeredis.aioredis
 from fastapi.testclient import TestClient
@@ -169,6 +171,8 @@ class FakeSkillHub(SkillHubBase):
             markdown=SKILL_MD,
         )
         self.download_users: list[str] = []
+        self.local_directory: str | None = None
+        self.allow_library_delete = True
 
     async def list_skills(
         self,
@@ -187,6 +191,15 @@ class FakeSkillHub(SkillHubBase):
         if card_id != "gifgrep":
             raise KeyError(card_id)
         return self.card
+
+    def get_local_directory(self, card_id: str) -> str | None:
+        """Return a test-controlled local directory for the main card."""
+        return self.local_directory if card_id == "gifgrep" else None
+
+    def can_delete_library_record(self, card_id: str) -> bool:
+        """Return the test-controlled library deletion capability."""
+        del card_id
+        return self.allow_library_delete
 
     async def download(
         self,
@@ -718,6 +731,8 @@ class HubRouterTest(IsolatedAsyncioTestCase):
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0]["hub_id"], "fakeskills")
         self.assertEqual(listed[0]["card_id"], "gifgrep")
+        self.assertFalse(listed[0]["can_open_folder"])
+        self.assertTrue(listed[0]["can_delete"])
 
     def test_installs_owner_scoped_skill_card(self) -> None:
         """An owner-scoped card id is accepted by the install route."""
@@ -766,6 +781,80 @@ class HubRouterTest(IsolatedAsyncioTestCase):
         )
         detail = self._client.get(f"/skill/{skill_id}", headers=HEADERS)
         self.assertEqual(detail.json()["markdown"], SKILL_MD)
+
+    def test_enable_and_disable_skill(self) -> None:
+        """The installed-skill enabled state is editable and persisted."""
+        skill_id = self._install_skill("gifgrep").json()["id"]
+
+        response = self._client.patch(
+            f"/skill/{skill_id}",
+            json={"enabled": False},
+            headers=HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["enabled"])
+        self.assertFalse(
+            self._client.get("/skill", headers=HEADERS).json()[0]["enabled"],
+        )
+
+        response = self._client.patch(
+            f"/skill/{skill_id}",
+            json={"enabled": True},
+            headers=HEADERS,
+        )
+        self.assertTrue(response.json()["enabled"])
+
+    def test_disabled_skill_cannot_be_added_to_workspace(self) -> None:
+        """Disabled library skills stay unavailable to new workspaces."""
+        skill_id = self._install_skill("gifgrep").json()["id"]
+        self._client.patch(
+            f"/skill/{skill_id}",
+            json={"enabled": False},
+            headers=HEADERS,
+        )
+
+        response = self._client.post(
+            "/workspace/skill/from-library",
+            params=self._scope,
+            json={"skill_ids": [skill_id]},
+            headers=HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["added"], [])
+        self.assertEqual(
+            response.json()["failed"],
+            {"gifgrep": "This skill is disabled."},
+        )
+        self.assertEqual(self._skill_hub.download_users, [])
+
+    def test_open_skill_folder_uses_hub_controlled_path(self) -> None:
+        """The client selects a skill id, never an arbitrary path."""
+        skill_id = self._install_skill("gifgrep").json()["id"]
+        with tempfile.TemporaryDirectory() as directory:
+            self._skill_hub.local_directory = directory
+            with patch(
+                "agentscope.app._router._skill._open_local_directory",
+            ) as opener:
+                response = self._client.post(
+                    f"/skill/{skill_id}/open-folder",
+                    headers=HEADERS,
+                )
+
+        self.assertEqual(response.status_code, 204)
+        opener.assert_called_once_with(Path(directory).resolve())
+
+    def test_open_skill_folder_rejects_remote_skill(self) -> None:
+        """A remote skill cannot turn the endpoint into a path launcher."""
+        skill_id = self._install_skill("gifgrep").json()["id"]
+
+        response = self._client.post(
+            f"/skill/{skill_id}/open-folder",
+            headers=HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 409)
 
     def test_install_skill_rejects_duplicate_name(self) -> None:
         """The skill name is unique per user."""
@@ -818,6 +907,30 @@ class HubRouterTest(IsolatedAsyncioTestCase):
             ).status_code,
             404,
         )
+
+    def test_read_only_skill_can_be_toggled_but_not_deleted(self) -> None:
+        """A mirrored skill stays toggleable while deletion is blocked."""
+        self._skill_hub.allow_library_delete = False
+        install = self._install_skill("gifgrep")
+        skill_id = install.json()["id"]
+
+        self.assertFalse(install.json()["can_delete"])
+        self.assertFalse(
+            self._client.patch(
+                f"/skill/{skill_id}",
+                json={"enabled": False},
+                headers=HEADERS,
+            ).json()["enabled"],
+        )
+        response = self._client.delete(
+            f"/skill/{skill_id}",
+            headers=HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 403)
+        listed = self._client.get("/skill", headers=HEADERS).json()
+        self.assertEqual(len(listed), 1)
+        self.assertFalse(listed[0]["can_delete"])
 
     def test_skill_library_is_per_user(self) -> None:
         """One user's install is invisible to another."""

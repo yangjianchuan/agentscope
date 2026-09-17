@@ -351,6 +351,9 @@ async def add_skills_from_library(
         if record is None:
             failed[skill_id] = "Not in your library."
             continue
+        if not record.enabled:
+            failed[record.name] = "This skill is disabled."
+            continue
         hub = skill_hubs.get(record.hub_id or "")
         if hub is None:
             failed[

@@ -50,9 +50,11 @@ class _FakeWorkspace:
         self._tools = tools or []
         self._skills = skills or []
         self._mcps = mcps or []
+        self.last_cwd: str | None = None
 
-    async def list_tools(self) -> list[ToolBase]:
+    async def list_tools(self, *, cwd: str | None = None) -> list[ToolBase]:
         """Return the configured workspace tools."""
+        self.last_cwd = cwd
         return list(self._tools)
 
     async def list_skills(
@@ -249,6 +251,39 @@ class TestGetToolkitBaseAssembly(IsolatedAsyncioTestCase):
         self.assertTrue(
             {"TeamCreate", "AgentCreate", "TeamSay", "TeamDelete"} <= names,
         )
+
+    async def test_working_directory_is_forwarded_to_workspace(self) -> None:
+        """Workspace builtins receive the resolved session directory."""
+        agent = _make_agent(source="user")
+        session = _make_session(
+            user_id="u",
+            agent_id=agent.id,
+            with_model=False,
+        )
+        workspace = _FakeWorkspace()
+
+        await get_toolkit(
+            storage=_NoOpStorage(),  # type: ignore[arg-type]
+            workspace=workspace,  # type: ignore[arg-type]
+            workspace_manager=FakeWorkspaceManager(),
+            scheduler_manager=SchedulerManager(
+                storage=_NoOpStorage(),  # type: ignore[arg-type]
+                message_bus=_NullBus(),  # type: ignore[arg-type]
+                workspace_manager=FakeWorkspaceManager(),
+            ),
+            background_task_manager=BackgroundTaskManager(
+                message_bus=_NullBus(),  # type: ignore[arg-type]
+            ),
+            message_bus=_NullBus(),  # type: ignore[arg-type]
+            user_id="u",
+            agent_record=agent,
+            session_record=session,
+            middlewares=[],
+            resource_access_service=_make_access(_NoOpStorage()),
+            working_directory="/projects/selected",
+        )
+
+        self.assertEqual(workspace.last_cwd, "/projects/selected")
 
 
 class TestGetToolkitWorkerVariant(IsolatedAsyncioTestCase):

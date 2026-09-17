@@ -2,7 +2,7 @@
 # pylint: disable=protected-access, using-constant-test
 """ChatService resolves team/channel context once and fans it out."""
 
-from types import SimpleNamespace
+import posixpath
 from typing import AsyncGenerator
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
@@ -74,7 +74,29 @@ class _WorkspaceManager:
 
     async def get_workspace(self, *_: object, **__: object) -> object:
         """Return an inert workspace."""
-        return SimpleNamespace(workdir="/tmp/agentscope-run-ctx-test")
+        class _Backend:
+            """Resolve paths with sandbox-style POSIX semantics."""
+
+            @staticmethod
+            def abspath(path: str, *, cwd: str) -> str:
+                """Resolve a possibly relative path against ``cwd``."""
+                return posixpath.normpath(
+                    path
+                    if posixpath.isabs(path)
+                    else posixpath.join(cwd, path),
+                )
+
+        class _Workspace:
+            """Minimal workspace with a usable backend."""
+
+            workdir = "/tmp/agentscope-run-ctx-test"
+
+            @staticmethod
+            def get_backend() -> _Backend:
+                """Return the path resolver."""
+                return _Backend()
+
+        return _Workspace()
 
 
 class TestRunContextResolution(IsolatedAsyncioTestCase):
@@ -104,6 +126,7 @@ class TestRunContextResolution(IsolatedAsyncioTestCase):
         )
         config = SessionConfig(
             workspace_id="ws-1",
+            cwd="selected/project",
             chat_model_config=ChatModelConfig(
                 type="test",
                 credential_id="cred-1",
@@ -137,12 +160,20 @@ class TestRunContextResolution(IsolatedAsyncioTestCase):
             team=team,
         )
         equipped: list[list] = []
+        prompts: list[str] = []
 
         class _Agent:
             """Capture the middlewares; reply without doing anything."""
 
-            def __init__(self, *, middlewares: list, **_: object) -> None:
+            def __init__(
+                self,
+                *,
+                middlewares: list,
+                system_prompt: str,
+                **_: object,
+            ) -> None:
                 equipped.append(middlewares)
+                prompts.append(system_prompt)
 
             async def reply_stream(
                 self,
@@ -197,6 +228,15 @@ class TestRunContextResolution(IsolatedAsyncioTestCase):
                 "get_team_calls": storage.get_team_calls,
                 "team_role": toolkit_kwargs["team_role"],
                 "channel_tools": toolkit_kwargs["channel_tools"],
+                "working_directory": toolkit_kwargs["working_directory"],
+                "permission_directories": sorted(
+                    toolkit_kwargs["session_record"]
+                    .state.permission_context.working_directories
+                ),
+                "prompt_has_cwd": any(
+                    "/tmp/agentscope-run-ctx-test/selected/project" in prompt
+                    for prompt in prompts
+                ),
                 "leader_names": [
                     mw._leader_name
                     for mws in equipped
@@ -208,6 +248,14 @@ class TestRunContextResolution(IsolatedAsyncioTestCase):
                 "get_team_calls": 1,
                 "team_role": "worker",
                 "channel_tools": [],
+                "working_directory": (
+                    "/tmp/agentscope-run-ctx-test/selected/project"
+                ),
+                "permission_directories": [
+                    "/tmp/agentscope-run-ctx-test",
+                    "/tmp/agentscope-run-ctx-test/selected/project",
+                ],
+                "prompt_has_cwd": True,
                 "leader_names": ["Leader"],
             },
         )

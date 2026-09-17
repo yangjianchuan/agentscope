@@ -715,11 +715,19 @@ export interface SkillView {
 	hub_id: string | null;
 	card_id: string | null;
 	version: string | null;
+	/** True when the server can reveal this skill in a local file manager. */
+	can_open_folder: boolean;
+	/** False for read-only records mirrored from an external local source. */
+	can_delete: boolean;
 }
 
 /** A library skill with its `SKILL.md` body, from the detail endpoint. */
 export interface SkillRecord extends SkillView {
 	markdown: string;
+}
+
+export interface UpdateSkillRequest {
+	enabled: boolean;
 }
 
 // ─── Schedule ─────────────────────────────────────────────────────────────────

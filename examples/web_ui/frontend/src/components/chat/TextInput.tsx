@@ -1,7 +1,12 @@
 import type { ContentBlock, TextBlock } from '@agentscope-ai/agentscope/message';
 import {
+	BookText,
+	Check,
+	File,
+	Folder,
 	Paperclip,
 	Loader2,
+	Plus,
 	Square,
 	type LucideIcon,
 	XIcon,
@@ -13,6 +18,7 @@ import React, {
 	useState,
 	useRef,
 	useMemo,
+	useEffect,
 	useLayoutEffect,
 	type KeyboardEvent,
 	useImperativeHandle,
@@ -21,6 +27,7 @@ import React, {
 
 import { Button } from '../ui/button';
 import { Kbd } from '../ui/kbd';
+import { workspaceApi, type DirectoryEntry, type SkillView } from '@/api';
 import {
 	Attachment,
 	AttachmentAction,
@@ -31,6 +38,7 @@ import {
 	AttachmentMedia,
 	AttachmentTitle,
 } from '@/components/ui/attachment.tsx';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { ReplyPhase } from '@/hooks/useMessages';
 import { useTranslation } from '@/i18n/useI18n.ts';
@@ -84,6 +92,20 @@ interface TextInputProps {
 	 */
 	phase?: ReplyPhase;
 	onInterrupt?: () => void;
+	/** Skills in the user's installed library, shown by the slash menu. */
+	installedSkills?: SkillView[];
+	/** Whether the installed-skill library is still loading. */
+	installedSkillsLoading?: boolean;
+	/** Skill names already equipped in this session's workspace. */
+	workspaceSkillNames?: ReadonlySet<string>;
+	/** Equips installed skills that are selected from the slash menu. */
+	onAddSkillsFromLibrary?: (skillIds: string[]) => Promise<void>;
+	/** Agent owning the workspace whose files may be referenced with `@`. */
+	agentId?: string | null;
+	/** Session owning the workspace whose files may be referenced with `@`. */
+	sessionId?: string | null;
+	/** Directory used as the root of `@` file references. */
+	workingDirectory?: string | null;
 	/**
 	 * Content rendered directly above the input pill, inside the outer
 	 * wrapper that {@link className} styles (e.g. the working directory
@@ -115,6 +137,77 @@ const TEXTAREA_PADDING_Y_PX = (COLLAPSED_HEIGHT_PX - LINE_HEIGHT_PX) / 2;
 const MAX_HEIGHT_PX = LINE_HEIGHT_PX * 6 + TEXTAREA_PADDING_Y_PX * 2;
 /** Horizontal padding of the textarea, mirrored by the overlay and the ghost. */
 const TEXTAREA_PADDING_X_PX = 12;
+const SKILL_MENU_ID = 'chat-skill-command-menu';
+const FILE_MENU_ID = 'chat-file-mention-menu';
+
+interface ActiveFileMention {
+	start: number;
+	end: number;
+	query: string;
+}
+
+/**
+ * Find an unfinished `@` file reference immediately before the caret.
+ * Quoted references keep paths containing spaces editable until the closing
+ * quote is inserted after selection.
+ */
+function activeFileMention(value: string, cursor: number): ActiveFileMention | null {
+	const beforeCursor = value.slice(0, cursor);
+	const quoted = beforeCursor.match(/(?:^|\s)@"([^"]*)$/);
+	if (quoted) {
+		return {
+			start: cursor - quoted[1].length - 2,
+			end: cursor,
+			query: quoted[1],
+		};
+	}
+
+	const plain = beforeCursor.match(/(?:^|\s)@([^\s"]*)$/);
+	if (!plain) return null;
+	return {
+		start: cursor - plain[1].length - 1,
+		end: cursor,
+		query: plain[1],
+	};
+}
+
+/** Split a mention query into the directory to list and basename to filter. */
+function splitFileQuery(query: string): { directory: string; search: string } | null {
+	const normalized = query.replace(/\\/g, '/');
+	if (normalized.startsWith('/') || /^[a-zA-Z]:/.test(normalized)) return null;
+	const lastSlash = normalized.lastIndexOf('/');
+	const directory = lastSlash === -1 ? '' : normalized.slice(0, lastSlash);
+	const segments = directory.split('/').filter(Boolean);
+	if (segments.some((segment) => segment === '.' || segment === '..')) return null;
+	return {
+		directory: segments.join('/'),
+		search: lastSlash === -1 ? normalized : normalized.slice(lastSlash + 1),
+	};
+}
+
+function joinRelativePath(directory: string, name: string): string {
+	return directory ? `${directory}/${name}` : name;
+}
+
+function formatFileSize(size: number | null): string {
+	if (size === null) return '';
+	if (size < 1024) return `${size} B`;
+	if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Return the search part of a skill slash selector, or ``null`` when the
+ * current value is an ordinary message. Both `/query` and `/skill query`
+ * are accepted while the canonical value inserted after selection is the
+ * latter.
+ */
+function skillSlashQuery(value: string): string | null {
+	const command = value.match(/^\/skill(?:\s+([^\s]*))?$/i);
+	if (command) return command[1] ?? '';
+	const shortcut = value.match(/^\/([^\s]*)$/);
+	return shortcut?.[1] ?? null;
+}
 
 /**
  * A text input component with file attachment support and autocomplete functionality.
@@ -139,6 +232,13 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 			fileProcessor,
 			phase = 'idle',
 			onInterrupt,
+			installedSkills = [],
+			installedSkillsLoading = false,
+			workspaceSkillNames = new Set<string>(),
+			onAddSkillsFromLibrary,
+			agentId = null,
+			sessionId = null,
+			workingDirectory = null,
 			headerSlot,
 		},
 		ref,
@@ -148,9 +248,23 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 		const [value, setValue] = useState('');
 		const [files, setFiles] = useState<ProcessedFile[]>([]);
 		const [isFocused, setIsFocused] = useState(false);
+		const [skillMenuOpen, setSkillMenuOpen] = useState(false);
+		const [skillMenuForced, setSkillMenuForced] = useState(false);
+		const [activeSkillIndex, setActiveSkillIndex] = useState(0);
+		const [addingSkillId, setAddingSkillId] = useState<string | null>(null);
+		const [skillError, setSkillError] = useState<string | null>(null);
+		const [cursorPosition, setCursorPosition] = useState(0);
+		const [fileRootPath, setFileRootPath] = useState<string | null>(null);
+		const [fileListingDirectory, setFileListingDirectory] = useState<string | null>(null);
+		const [fileEntries, setFileEntries] = useState<DirectoryEntry[]>([]);
+		const [fileMenuLoading, setFileMenuLoading] = useState(false);
+		const [fileMenuError, setFileMenuError] = useState<string | null>(null);
+		const [activeFileIndex, setActiveFileIndex] = useState(0);
+		const [dismissedFileMention, setDismissedFileMention] = useState<string | null>(null);
 		const textareaRef = useRef<HTMLTextAreaElement>(null);
 		const fileInputRef = useRef<HTMLInputElement>(null);
 		const measureRef = useRef<HTMLSpanElement>(null);
+		const fileRequestId = useRef(0);
 		/** ``true`` — textarea takes the full width, buttons drop to their own row. */
 		const [isStacked, setIsStacked] = useState(false);
 
@@ -202,7 +316,255 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 			return '';
 		}, [value, autoComplete, isFocused]);
 
+		const slashQuery = skillMenuForced ? '' : skillSlashQuery(value);
+		const fileMention = useMemo(
+			() => activeFileMention(value, cursorPosition),
+			[value, cursorPosition],
+		);
+		const fileQuery = useMemo(
+			() => (fileMention ? splitFileQuery(fileMention.query) : null),
+			[fileMention],
+		);
+		const fileMentionKey = fileMention
+			? `${fileMention.start}:${fileMention.end}:${fileMention.query}`
+			: null;
+		const showFileMenu = Boolean(
+			isFocused &&
+			fileMention &&
+			fileQuery &&
+			agentId &&
+			sessionId &&
+			phase === 'idle' &&
+			!disabled &&
+			fileMentionKey !== dismissedFileMention,
+		);
+
+		useEffect(() => {
+			setFileRootPath(null);
+			setFileListingDirectory(null);
+			setFileEntries([]);
+			setFileMenuError(null);
+			fileRequestId.current += 1;
+		}, [agentId, sessionId, workingDirectory]);
+
+		useEffect(() => {
+			if (!showFileMenu || !agentId || !sessionId || !fileQuery) return;
+			if (fileRootPath && fileListingDirectory === fileQuery.directory) return;
+
+			const requestId = ++fileRequestId.current;
+			let cancelled = false;
+			setFileMenuLoading(true);
+			setFileMenuError(null);
+
+			void (async () => {
+				try {
+					let rootPath = fileRootPath;
+					if (!rootPath) {
+						const root = await workspaceApi.directories(
+							agentId,
+							sessionId,
+							workingDirectory ?? '',
+						);
+						if (cancelled || requestId !== fileRequestId.current) return;
+						rootPath = root.path;
+						setFileRootPath(root.path);
+						if (!fileQuery.directory) {
+							setFileEntries(root.entries);
+							setFileListingDirectory('');
+							return;
+						}
+					}
+
+					const listing = await workspaceApi.directories(
+						agentId,
+						sessionId,
+						`${rootPath}/${fileQuery.directory}`,
+					);
+					if (cancelled || requestId !== fileRequestId.current) return;
+					setFileEntries(listing.entries);
+					setFileListingDirectory(fileQuery.directory);
+				} catch {
+					if (cancelled || requestId !== fileRequestId.current) return;
+					setFileEntries([]);
+					setFileListingDirectory(fileQuery.directory);
+					setFileMenuError(t('textInput.fileMenuError'));
+				} finally {
+					if (!cancelled && requestId === fileRequestId.current) {
+						setFileMenuLoading(false);
+					}
+				}
+			})();
+
+			return () => {
+				cancelled = true;
+			};
+		}, [
+			showFileMenu,
+			agentId,
+			sessionId,
+			workingDirectory,
+			fileRootPath,
+			fileListingDirectory,
+			fileQuery,
+			t,
+		]);
+
+		const matchingFiles = useMemo(() => {
+			const search = fileQuery?.search.trim().toLocaleLowerCase() ?? '';
+			return fileEntries
+				.filter((entry) => !search || entry.name.toLocaleLowerCase().includes(search))
+				.sort((left, right) => {
+					if (left.is_dir !== right.is_dir) return left.is_dir ? -1 : 1;
+					return left.name.localeCompare(right.name);
+				})
+				.slice(0, 100);
+		}, [fileEntries, fileQuery?.search]);
+
+		useEffect(() => {
+			setActiveFileIndex(0);
+		}, [fileQuery?.directory, fileQuery?.search]);
+
+		useEffect(() => {
+			if (activeFileIndex < matchingFiles.length) return;
+			setActiveFileIndex(Math.max(0, matchingFiles.length - 1));
+		}, [activeFileIndex, matchingFiles.length]);
+
+		const matchingSkills = useMemo(() => {
+			const query = (slashQuery ?? '').trim().toLocaleLowerCase();
+			return installedSkills
+				.filter((skill) => skill.enabled)
+				.filter((skill) => {
+					if (!query) return true;
+					return [
+						skill.name,
+						skill.display_name ?? '',
+						skill.description,
+						...skill.tags,
+					].some((part) => part.toLocaleLowerCase().includes(query));
+				});
+		}, [installedSkills, slashQuery]);
+		const showSkillMenu =
+			isFocused &&
+			skillMenuOpen &&
+			slashQuery !== null &&
+			phase === 'idle' &&
+			!disabled &&
+			!showFileMenu;
+
+		useEffect(() => {
+			setActiveSkillIndex(0);
+		}, [slashQuery]);
+
+		useEffect(() => {
+			if (activeSkillIndex < matchingSkills.length) return;
+			setActiveSkillIndex(Math.max(0, matchingSkills.length - 1));
+		}, [activeSkillIndex, matchingSkills.length]);
+
+		const handleSkillSelect = async (skill: SkillView) => {
+			if (addingSkillId) return;
+			setSkillError(null);
+			try {
+				if (!workspaceSkillNames.has(skill.name)) {
+					if (!onAddSkillsFromLibrary) return;
+					setAddingSkillId(skill.id);
+					await onAddSkillsFromLibrary([skill.id]);
+				}
+
+				const selectorOnly = skillSlashQuery(value) !== null;
+				const message = selectorOnly ? '' : value.trimStart();
+				setValue(`/skill ${skill.name} ${message}`);
+				setSkillMenuOpen(false);
+				setSkillMenuForced(false);
+				requestAnimationFrame(() => textareaRef.current?.focus());
+			} catch (error) {
+				setSkillError((error as Error).message);
+			} finally {
+				setAddingSkillId(null);
+			}
+		};
+
+		const replaceFileMention = (replacement: string, appendSpace: boolean) => {
+			if (!fileMention) return;
+			const suffix = value.slice(fileMention.end);
+			const separator = appendSpace && !/^\s/.test(suffix) ? ' ' : '';
+			const nextValue = value.slice(0, fileMention.start) + replacement + separator + suffix;
+			const nextCursor = fileMention.start + replacement.length + separator.length;
+			setValue(nextValue);
+			setCursorPosition(nextCursor);
+			setDismissedFileMention(null);
+			requestAnimationFrame(() => {
+				textareaRef.current?.focus();
+				textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+			});
+		};
+
+		const handleFileMentionSelect = (entry: DirectoryEntry) => {
+			if (!fileQuery) return;
+			const relativePath = joinRelativePath(fileQuery.directory, entry.name);
+			if (entry.is_dir) {
+				const replacement = /\s/.test(relativePath)
+					? `@"${relativePath}/`
+					: `@${relativePath}/`;
+				replaceFileMention(replacement, false);
+				return;
+			}
+
+			const replacement = /\s/.test(relativePath) ? `@"${relativePath}"` : `@${relativePath}`;
+			replaceFileMention(replacement, true);
+		};
+
 		const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+			if (e.nativeEvent.isComposing) return;
+
+			if (showFileMenu) {
+				if (e.key === 'Escape') {
+					e.preventDefault();
+					setDismissedFileMention(fileMentionKey);
+					return;
+				}
+				if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+					e.preventDefault();
+					if (matchingFiles.length === 0) return;
+					const direction = e.key === 'ArrowDown' ? 1 : -1;
+					setActiveFileIndex(
+						(index) =>
+							(index + direction + matchingFiles.length) % matchingFiles.length,
+					);
+					return;
+				}
+				if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+					e.preventDefault();
+					const selected = matchingFiles[activeFileIndex];
+					if (selected) handleFileMentionSelect(selected);
+					return;
+				}
+			}
+
+			if (showSkillMenu) {
+				if (e.key === 'Escape') {
+					e.preventDefault();
+					setSkillMenuOpen(false);
+					setSkillMenuForced(false);
+					return;
+				}
+				if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+					e.preventDefault();
+					if (matchingSkills.length === 0) return;
+					const direction = e.key === 'ArrowDown' ? 1 : -1;
+					setActiveSkillIndex(
+						(index) =>
+							(index + direction + matchingSkills.length) % matchingSkills.length,
+					);
+					return;
+				}
+				if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+					e.preventDefault();
+					const selected = matchingSkills[activeSkillIndex];
+					if (selected) void handleSkillSelect(selected);
+					return;
+				}
+			}
+
 			// Tab key to select autocomplete
 			if (e.key === 'Tab' && suggestion) {
 				e.preventDefault();
@@ -245,6 +607,8 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 
 			onSend?.(blocks);
 			setValue('');
+			setCursorPosition(0);
+			setDismissedFileMention(null);
 			setFiles([]);
 		};
 
@@ -326,7 +690,179 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 		};
 
 		return (
-			<div className={cn('flex flex-col', className)}>
+			<div className={cn('relative flex flex-col', className)}>
+				{showFileMenu && (
+					<div
+						id={FILE_MENU_ID}
+						role="listbox"
+						aria-label={t('textInput.fileMenuTitle')}
+						className="absolute inset-x-1 bottom-full z-[60] mb-2 overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-lg"
+					>
+						<div className="flex h-10 items-center gap-2 border-b px-3 text-sm font-medium">
+							<File className="size-4 text-muted-foreground" />
+							<span>{t('textInput.fileMenuTitle')}</span>
+							{fileQuery?.directory && (
+								<span className="min-w-0 truncate font-mono text-xs font-normal text-muted-foreground">
+									{fileQuery.directory}
+								</span>
+							)}
+							{!fileMenuLoading && !fileMenuError && (
+								<span className="ml-auto text-xs font-normal text-muted-foreground">
+									{matchingFiles.length}
+								</span>
+							)}
+						</div>
+
+						<div className="max-h-72 overflow-y-auto p-1.5">
+							{fileMenuLoading ? (
+								<div className="flex h-20 items-center justify-center">
+									<Loader2 className="size-4 animate-spin text-muted-foreground" />
+								</div>
+							) : fileMenuError ? (
+								<div className="px-3 py-6 text-center text-sm text-destructive">
+									{fileMenuError}
+								</div>
+							) : matchingFiles.length === 0 ? (
+								<div className="px-3 py-6 text-center text-sm text-muted-foreground">
+									{t('textInput.fileMenuEmpty')}
+								</div>
+							) : (
+								matchingFiles.map((entry, index) => (
+									<button
+										key={entry.name}
+										id={`${FILE_MENU_ID}-${index}`}
+										type="button"
+										role="option"
+										aria-selected={index === activeFileIndex}
+										onMouseDown={(event) => event.preventDefault()}
+										onMouseEnter={() => setActiveFileIndex(index)}
+										onClick={() => handleFileMentionSelect(entry)}
+										className={cn(
+											'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left outline-none transition-colors',
+											index === activeFileIndex &&
+												'bg-accent text-accent-foreground',
+										)}
+									>
+										{entry.is_dir ? (
+											<Folder className="size-4 shrink-0 text-muted-foreground" />
+										) : (
+											<FileText className="size-4 shrink-0 text-muted-foreground" />
+										)}
+										<span className="min-w-0 flex-1 truncate text-sm">
+											{entry.name}
+										</span>
+										<span className="shrink-0 text-xs text-muted-foreground">
+											{entry.is_dir
+												? t('textInput.fileFolder')
+												: formatFileSize(entry.size_bytes)}
+										</span>
+									</button>
+								))
+							)}
+						</div>
+					</div>
+				)}
+				{showSkillMenu && (
+					<div
+						id={SKILL_MENU_ID}
+						role="listbox"
+						aria-label={t('textInput.skillMenuTitle')}
+						className="absolute inset-x-1 bottom-full z-[60] mb-2 overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-lg"
+					>
+						<div className="flex h-10 items-center gap-2 border-b px-3 text-sm font-medium">
+							<BookText className="size-4 text-muted-foreground" />
+							<span>{t('textInput.skillMenuTitle')}</span>
+							{!installedSkillsLoading && (
+								<span className="ml-auto text-xs font-normal text-muted-foreground">
+									{matchingSkills.length}
+								</span>
+							)}
+						</div>
+
+						<div className="max-h-72 overflow-y-auto p-1.5">
+							{installedSkillsLoading ? (
+								<div className="flex h-20 items-center justify-center">
+									<Loader2 className="size-4 animate-spin text-muted-foreground" />
+								</div>
+							) : matchingSkills.length === 0 ? (
+								<div className="px-3 py-6 text-center text-sm text-muted-foreground">
+									{installedSkills.length === 0
+										? t('textInput.skillMenuEmpty')
+										: t('textInput.skillMenuNoMatch')}
+								</div>
+							) : (
+								matchingSkills.map((skill, index) => {
+									const equipped = workspaceSkillNames.has(skill.name);
+									const adding = addingSkillId === skill.id;
+									return (
+										<button
+											key={skill.id}
+											id={`${SKILL_MENU_ID}-${index}`}
+											type="button"
+											role="option"
+											aria-selected={index === activeSkillIndex}
+											disabled={addingSkillId !== null}
+											onMouseDown={(event) => event.preventDefault()}
+											onMouseEnter={() => setActiveSkillIndex(index)}
+											onClick={() => void handleSkillSelect(skill)}
+											className={cn(
+												'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left outline-none transition-colors',
+												index === activeSkillIndex &&
+													'bg-accent text-accent-foreground',
+												addingSkillId !== null && 'cursor-wait',
+											)}
+										>
+											<Avatar className="size-8 rounded-md">
+												<AvatarImage
+													src={skill.icon_url ?? undefined}
+													alt=""
+												/>
+												<AvatarFallback className="rounded-md text-xs font-medium">
+													{(skill.display_name || skill.name)
+														.slice(0, 1)
+														.toUpperCase()}
+												</AvatarFallback>
+											</Avatar>
+											<span className="min-w-0 flex-1">
+												<span className="flex items-baseline gap-2">
+													<span className="truncate text-sm font-medium">
+														{skill.display_name || skill.name}
+													</span>
+													<span className="hidden shrink-0 font-mono text-xs text-muted-foreground sm:inline">
+														/{skill.name}
+													</span>
+												</span>
+												<span className="block truncate text-xs text-muted-foreground">
+													{skill.description}
+												</span>
+											</span>
+											<span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+												{adding ? (
+													<Loader2 className="size-3.5 animate-spin" />
+												) : equipped ? (
+													<Check className="size-3.5" />
+												) : (
+													<Plus className="size-3.5" />
+												)}
+												<span className="hidden sm:inline">
+													{equipped
+														? t('textInput.skillInWorkspace')
+														: t('textInput.skillAddToWorkspace')}
+												</span>
+											</span>
+										</button>
+									);
+								})
+							)}
+						</div>
+
+						{skillError && (
+							<div className="border-t px-3 py-2 text-xs text-destructive">
+								{skillError}
+							</div>
+						)}
+					</div>
+				)}
 				{headerSlot}
 				<div
 					id="tour-chat-input"
@@ -418,6 +954,7 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 							<div className="flex shrink-0 gap-2">
 								<div className="size-9" />
 								<div className="size-9" />
+								<div className="size-9" />
 							</div>
 						</div>
 
@@ -431,9 +968,28 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 							<textarea
 								ref={textareaRef}
 								value={value}
-								onChange={(e) => setValue(e.target.value)}
+								onChange={(e) => {
+									const nextValue = e.target.value;
+									setValue(nextValue);
+									setCursorPosition(e.target.selectionStart ?? nextValue.length);
+									setDismissedFileMention(null);
+									setSkillMenuForced(false);
+									setSkillMenuOpen(skillSlashQuery(nextValue) !== null);
+									setSkillError(null);
+								}}
 								onKeyDown={handleKeyDown}
-								onFocus={() => setIsFocused(true)}
+								onFocus={() => {
+									setIsFocused(true);
+									setCursorPosition(
+										textareaRef.current?.selectionStart ?? value.length,
+									);
+									if (skillSlashQuery(value) !== null) setSkillMenuOpen(true);
+								}}
+								onSelect={(e) => {
+									setCursorPosition(
+										e.currentTarget.selectionStart ?? value.length,
+									);
+								}}
 								onBlur={() => setIsFocused(false)}
 								placeholder={defaultPlaceholder}
 								disabled={disabled}
@@ -448,6 +1004,23 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 									overflowY: 'auto',
 								}}
 								autoFocus={true}
+								role="combobox"
+								aria-autocomplete="list"
+								aria-controls={
+									showFileMenu
+										? FILE_MENU_ID
+										: showSkillMenu
+											? SKILL_MENU_ID
+											: undefined
+								}
+								aria-expanded={showFileMenu || showSkillMenu}
+								aria-activedescendant={
+									showFileMenu && matchingFiles.length > 0
+										? `${FILE_MENU_ID}-${activeFileIndex}`
+										: showSkillMenu && matchingSkills.length > 0
+											? `${SKILL_MENU_ID}-${activeSkillIndex}`
+											: undefined
+								}
 							/>
 
 							{/* Autocomplete overlay — its padding and line-height mirror the
@@ -481,6 +1054,32 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 							className="flex shrink-0 items-center gap-2"
 							style={{ height: `${COLLAPSED_HEIGHT_PX}px` }}
 						>
+							{/* Installed skill slash-command menu */}
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon-lg"
+										aria-label={t('textInput.chooseSkill')}
+										disabled={disabled || phase !== 'idle'}
+										onClick={() => {
+											setSkillError(null);
+											setSkillMenuForced(true);
+											setSkillMenuOpen(true);
+											setActiveSkillIndex(0);
+											requestAnimationFrame(() =>
+												textareaRef.current?.focus(),
+											);
+										}}
+										className="shrink-0 rounded-full"
+									>
+										<BookText className="size-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>{t('textInput.chooseSkill')}</TooltipContent>
+							</Tooltip>
+
 							{/* Attachment button */}
 							<Tooltip>
 								<TooltipTrigger asChild>

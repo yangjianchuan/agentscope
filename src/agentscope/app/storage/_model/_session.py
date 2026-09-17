@@ -255,8 +255,10 @@ class SessionConfig(BaseModel):
     ``backend.abspath(cwd, cwd=workspace.workdir)`` at the point of use
     — which handles both forms.
 
-    Purely a viewing anchor: it does **not** change where ``Bash``,
-    ``Glob`` or ``Grep`` execute.
+    The chat runtime resolves this value for every turn and uses it as the
+    default directory for shell execution and filesystem searches.  The
+    workspace root remains the storage location for session state, skills,
+    and offloaded tool results.
     """
 
     chat_model_config: ChatModelConfig | None = None
